@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Kanha Admin</title>
+  <style>
+    * { box-sizing: border-box; }
+    body { font-family: system-ui, sans-serif; margin: 0; background: #0e0e10; color: #eaeaea; }
+    .wrap { max-width: 900px; margin: 0 auto; padding: 20px; }
+    input, textarea, button { width: 100%; padding: 10px; margin: 6px 0; border-radius: 8px; border: 1px solid #2a2a2e; background: #17171a; color: #eaeaea; font-size: 14px; }
+    button { background: #c4302b; border: none; font-weight: 600; cursor: pointer; }
+    button:hover { background: #e03c36; }
+    button.ghost { background: #2a2a2e; }
+    button.del { background: #3a1416; color: #ff8b8b; }
+    .row { display: flex; gap: 10px; }
+    .row > * { flex: 1; }
+    .card { background: #17171a; border: 1px solid #2a2a2e; border-radius: 10px; padding: 14px; margin: 10px 0; }
+    .card h3 { margin: 0 0 6px; font-size: 15px; }
+    .tag { font-size: 11px; padding: 2px 8px; border-radius: 99px; background: #2a2a2e; margin-left: 6px; }
+    .tag.live { background: #14361a; color: #6ee787; }
+    .muted { color: #777; font-size: 12px; }
+    #status { font-size: 12px; color: #888; margin-bottom: 10px; }
+    .hidden { display: none; }
+    label.muted { display: flex; align-items: center; gap: 6px; }
+    label.muted input { width: auto; }
+  </style>
+</head>
+<body>
+<div class="wrap">
+  <h2>Kanha Admin</h2>
+  <div id="status">checking auth…</div>
+
+  <div id="loginBox" class="hidden">
+    <input id="email" placeholder="admin email" type="email">
+    <input id="pass" placeholder="password" type="password">
+    <button onclick="login()">Sign In</button>
+  </div>
+
+  <div id="panelBox" class="hidden">
+    <div class="row">
+      <button class="ghost" onclick="logout()">Sign Out</button>
+      <button class="ghost" onclick="toggleForm()">+ New Video</button>
+    </div>
+
+    <div id="formBox" class="hidden" style="margin-top:14px">
+      <input id="f_title" placeholder="Title">
+      <textarea id="f_desc" placeholder="Description" rows="2"></textarea>
+      <input id="f_url" placeholder="Video URL (mp4)">
+      <input id="f_thumb" placeholder="Thumbnail URL">
+      <div class="row">
+        <input id="f_cat" placeholder="Category">
+        <input id="f_dur" placeholder="Duration (sec)" type="number">
+      </div>
+      <div class="row">
+        <label class="muted"><input type="checkbox" id="f_pub"> Published</label>
+        <label class="muted"><input type="checkbox" id="f_feat"> Featured</label>
+      </div>
+      <button onclick="saveVideo()" id="saveBtn">Save Video</button>
+      <button class="ghost" onclick="clearForm()">Clear</button>
+    </div>
+
+    <h3 style="margin-top:24px">Videos</h3>
+    <div id="list"></div>
+  </div>
+</div>
+
+<script type="module">
+import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
+import { getAuth, signInWithEmailAndPassword, signOut, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js";
+import { getFirestore, collection, doc, getDoc, addDoc, updateDoc, deleteDoc, onSnapshot, query, orderBy, serverTimestamp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
+
+// PASTE YOUR WEB CONFIG HERE
+const firebaseConfig = {
+  apiKey: "AIzaSyCD_KGEHGfjhqTr2ulVXhUmmHm7exMeTew",
+  authDomain: "kanha-video-app-36c12.firebaseapp.com",
+  databaseURL: "https://kanha-video-app-36c12-default-rtdb.firebaseio.com",
+  projectId: "kanha-video-app-36c12",
+  storageBucket: "kanha-video-app-36c12.firebasestorage.app",
+  messagingSenderId: "101261155223",
+  appId: "1:101261155223:web:9334d184f10375c70d42d2",
+  measurementId: "G-WKT0ETXDN3"
+};
+
+const app = initializeApp(firebaseConfig);
+const auth = getAuth(app);
+const db = getFirestore(app);
+
+let editingId = null;
+const $ = id => document.getElementById(id);
+const statusEl = $("status");
+
+onAuthStateChanged(auth, async user => {
+  if (!user) {
+    $("loginBox").classList.remove("hidden");
+    $("panelBox").classList.add("hidden");
+    statusEl.textContent = "not signed in";
+    return;
+  }
+  const adminDoc = await getDoc(doc(db, "admins", user.uid));
+  if (!adminDoc.exists()) {
+    statusEl.textContent = "NOT an admin. UID: " + user.uid;
+    await signOut(auth);
+    return;
+  }
+  $("loginBox").classList.add("hidden");
+  $("panelBox").classList.remove("hidden");
+  statusEl.textContent = "admin: " + user.email;
+  watchVideos();
+});
+
+window.login = async () => {
+  try { await signInWithEmailAndPassword(auth, $("email").value, $("pass").value); } 
+  catch (e) { statusEl.textContent = e.message; }
+};
+window.logout = () => signOut(auth);
+window.toggleForm = () => $("formBox").classList.toggle("hidden");
+
+let unsub = null;
+function watchVideos() {
+  if (unsub) unsub();
+  const q = query(collection(db, "videos"), orderBy("createdAt", "desc"));
+  unsub = onSnapshot(q, snap => {
+    const list = $("list");
+    list.innerHTML = "";
+    if (snap.empty) { list.innerHTML = '<div class="muted">no videos yet</div>'; return; }
+    snap.forEach(d => {
+      const v = d.data();
+      const card = document.createElement("div");
+      card.className = "card";
+      card.innerHTML = `
+        <h3>${esc(v.title)} ${v.published ? '<span class="tag live">LIVE</span>' : '<span class="tag">HIDDEN</span>'}</h3>
+        <div class="muted">${esc(v.category || '')} • ${v.views || 0} views</div>
+        <div class="row" style="margin-top:8px">
+          <button class="ghost" onclick="editVideo('${d.id}')">Edit</button>
+          <button class="ghost" onclick="togglePub('${d.id}', ${!v.published})">${v.published ? 'Unpublish' : 'Publish'}</button>
+          <button class="del" onclick="removeVideo('${d.id}')">Delete</button>
+        </div>`;
+      list.appendChild(card);
+    });
+  });
+}
+function esc(s) { const d = document.createElement("div"); d.textContent = s || ""; return d.innerHTML; }
+
+window.saveVideo = async () => {
+  const payload = {
+    title: $("f_title").value.trim(), description: $("f_desc").value.trim(),
+    videoUrl: $("f_url").value.trim(), thumbUrl: $("f_thumb").value.trim(),
+    category: $("f_cat").value.trim(), duration: parseInt($("f_dur").value) || 0,
+    published: $("f_pub").checked, featured: $("f_feat").checked
+  };
+  if (!payload.title || !payload.videoUrl) { statusEl.textContent = "title and url required"; return; }
+  try {
+    if (editingId) { await updateDoc(doc(db, "videos", editingId), payload); statusEl.textContent = "updated"; }
+    else { payload.views = 0; payload.createdAt = serverTimestamp(); await addDoc(collection(db, "videos"), payload); statusEl.textContent = "added"; }
+    clearForm();
+  } catch (e) { statusEl.textContent = e.message; }
+};
+
+window.editVideo = async id => {
+  const d = await getDoc(doc(db, "videos", id));
+  if (!d.exists()) return;
+  const v = d.data();
+  $("f_title").value = v.title || ""; $("f_desc").value = v.description || "";
+  $("f_url").value = v.videoUrl || ""; $("f_thumb").value = v.thumbUrl || "";
+  $("f_cat").value = v.category || ""; $("f_dur").value = v.duration || 0;
+  $("f_pub").checked = !!v.published; $("f_feat").checked = !!v.featured;
+  editingId = id; $("formBox").classList.remove("hidden"); $("saveBtn").textContent = "Update Video";
+  window.scrollTo({ top: 0, behavior: "smooth" });
+};
+window.togglePub = (id, val) => updateDoc(doc(db, "videos", id), { published: val });
+window.removeVideo = async id => { if(confirm("delete?")) await deleteDoc(doc(db, "videos", id)); };
+window.clearForm = () => {
+  ["f_title","f_desc","f_url","f_thumb","f_cat","f_dur"].forEach(i => $(i).value = "");
+  $("f_pub").checked = false; $("f_feat").checked = false; editingId = null; $("saveBtn").textContent = "Save Video";
+};
+</script>
+</body>
+</html>
